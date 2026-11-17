@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "numpy_rnn"
+version = "0.0.1"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ---------------- pixi ----------------
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["win-64", "osx-arm64", "linux-64"]
+
+[tool.pixi.dependencies]
+python = "3.10.*"
+numpy = ">=2.2"
+pytorch = ">=2.10"
+loguru = ">=0.7"
+scikit-learn = ">=1.7"
+
+[tool.pixi.pypi-dependencies]
+numpy_rnn = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+torch-rnn = "python -m numpy_rnn.torch_rnns"
