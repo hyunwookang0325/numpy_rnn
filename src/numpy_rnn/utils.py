@@ -188,6 +188,15 @@ def set_train_val_set(
 
 
 def softmax(logits: np.ndarray) -> np.ndarray:
+    """
+    Numerically stable softmax over the last axis (the row max is subtracted first).
+
+    Args:
+        logits (np.ndarray): Unnormalized scores, shape [..., V].
+
+    Returns:
+        np.ndarray: Probabilities that sum to 1 along the last axis, same shape as logits.
+    """
     logits_max: np.ndarray = logits.max(axis=-1, keepdims=True)
     logits = logits - np.ones(shape=logits.shape, dtype=np.float32) * logits_max
     nominator = np.exp(logits)
@@ -240,7 +249,23 @@ def convert_np_to_torch(
 
 def CrossEntropyLoss(
     yhat: np.ndarray, y_true: np.ndarray, ignore_index: int = -100
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[float, np.ndarray]:
+    """
+    Mean cross-entropy over non-ignored targets, and its gradient w.r.t. the logits.
+
+    Matches ``torch.nn.CrossEntropyLoss(ignore_index=...)`` with mean reduction.
+    The gradient uses softmax + cross-entropy combined: (p - one_hot) / n_valid,
+    with ignored rows set to 0.
+
+    Args:
+        yhat (np.ndarray): Softmax probabilities (not logits), shape [N, V].
+        y_true (np.ndarray): Target class indices, shape [N].
+        ignore_index (int): Target value to skip (padding).
+
+    Returns:
+        tuple[float, np.ndarray]: (loss, dlogits), where dlogits = dLoss/dlogits
+            has shape [N, V].
+    """
     mask: np.ndarray = y_true != ignore_index
     tmp: np.ndarray = y_true.copy()
     y_true_: np.ndarray = np.where(mask, tmp, 0)

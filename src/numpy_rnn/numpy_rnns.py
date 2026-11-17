@@ -1,3 +1,13 @@
+"""Character-level RNN / GRU language models written in NumPy (forward, BPTT backward, SGD).
+
+The weights are initialized from ``torch.nn.RNN`` / ``torch.nn.GRU`` / ``torch.nn.Linear``
+so that every NumPy result can be compared 1:1 with PyTorch autograd. PyTorch is used only
+for weight initialization and ``DataLoader`` batching; all math is done in NumPy.
+
+Shape symbols used throughout:
+    B: batch size, T: sequence length, V: vocabulary size (29), H: hidden size.
+"""
+
 import torch
 import torch.nn as nn
 from loguru import logger
@@ -15,9 +25,38 @@ from .utils import (
 
 
 class RNN(nn.Module):
+    """
+    Vanilla (Elman) RNN layer plus a linear classifier, implemented in NumPy.
+
+    ``h_t = tanh(x_t W_ih^T + b_ih + h_{t-1} W_hh^T + b_hh)``, then
+    ``logits_t = h_t W_fc^T + b_fc``.
+
+    ``forward`` / ``backward`` / ``step`` cover the recurrent layer only. The classifier
+    (fc), softmax, cross-entropy and the fc update are done inside ``train``.
+
+    Attributes:
+        weight_ih (np.ndarray): Input-to-hidden weight, shape [H, V].
+        weight_hh (np.ndarray): Hidden-to-hidden weight, shape [H, H].
+        bias_ih (np.ndarray): Input-to-hidden bias, shape [H].
+        bias_hh (np.ndarray): Hidden-to-hidden bias, shape [H].
+        weight_fc (np.ndarray): Classifier weight, shape [V, H].
+        bias_fc (np.ndarray): Classifier bias, shape [V].
+        cache (dict[str, np.ndarray]): Per-time-step values saved by ``forward`` for
+            ``backward``. Keys: "x_t" [B, T, V], "h_t", "tx", "th", "h_prev" [B, T, H].
+        diff (dict[str, np.ndarray | None]): Gradients from the latest ``backward``.
+        PARAMS (list[str]): Names of the trainable arrays saved to the npz checkpoint.
+    """
+
     def __init__(
         self, input_size: int = 29, hidden_size: int = 16, batch_first: bool = True
-    ):
+    ) -> None:
+        """
+        Args:
+            input_size (int): Vocabulary size V (one-hot input size and number of
+                output classes).
+            hidden_size (int): Hidden state size H.
+            batch_first (bool): If True, inputs are shaped [B, T, V].
+        """
         super().__init__()
         self.input_size: int = input_size
         self.hidden_size: int = hidden_size
@@ -40,13 +79,13 @@ class RNN(nn.Module):
         self.classifier: nn.Linear = nn.Linear(
             in_features=self.hidden_size, out_features=self.input_size
         )
-        fc_state_dict = self.classifier.state_dict()
+        fc_state_dict: dict[str, torch.Tensor] = self.classifier.state_dict()
         self.weight_fc: np.ndarray = fc_state_dict["weight"].detach().cpu().numpy()
         self.bias_fc: np.ndarray = fc_state_dict["bias"].detach().cpu().numpy()
 
         self.hidden: np.ndarray | None = None
-        self.cache: dict[str, any] = {}
-        self.diff: dict[str, any] = {}
+        self.cache: dict[str, np.ndarray] = {}
+        self.diff: dict[str, np.ndarray | None] = {}
         self.PARAMS: list[str] = [
             "weight_fc",
             "bias_fc",
@@ -57,6 +96,17 @@ class RNN(nn.Module):
         ]
 
     def forward(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Run the RNN over the whole sequence, starting from a zero hidden state.
+
+        Args:
+            X (np.ndarray): One-hot input, shape [B, T, V].
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: (output, h_last), where output holds the
+                hidden state of every time step, shape [B, T, H], and h_last is the
+                hidden state of the last time step, shape [B, H].
+        """
         B, T, V = X.shape
         H: int = self.hidden_size
         self.initial_hidden: np.ndarray = np.zeros(shape=(B, H), dtype=np.float32)
@@ -92,7 +142,21 @@ class RNN(nn.Module):
         # return output and last hidden state
         return self.cache["h_t"], h_t
 
-    def backward(self, doutput: np.ndarray) -> dict[str, any]:
+    def backward(self, doutput: np.ndarray) -> dict[str, np.ndarray | None]:
+        """
+        Backpropagation through time for the RNN layer, using the latest ``forward`` cache.
+
+        Gradients of the shared weights are summed over all time steps.
+
+        Args:
+            doutput (np.ndarray): dLoss/d(output), the gradient flowing into every
+                hidden state from the classifier, shape [B, T, H].
+
+        Returns:
+            dict[str, np.ndarray | None]: Gradients (also stored in ``self.diff``):
+                "dx" [B, T, V], "dweight_ih" [H, V], "dweight_hh" [H, H],
+                "dbias_ih" [H], "dbias_hh" [H].
+        """
         B, T, H = doutput.shape
 
         dx: np.ndarray = np.zeros(shape=self.cache["x_t"].shape, dtype=np.float32)
@@ -101,7 +165,7 @@ class RNN(nn.Module):
         dbias_ih: np.ndarray = np.zeros(shape=self.bias_ih.shape, dtype=np.float32)
         dbias_hh: np.ndarray = np.zeros(shape=self.bias_hh.shape, dtype=np.float32)
 
-        self.diff: dict[str, any] = {
+        self.diff: dict[str, np.ndarray | None] = {
             "dx": None,
             "dweight_ih": None,
             "dweight_hh": None,
@@ -144,7 +208,17 @@ class RNN(nn.Module):
 
         return self.diff
 
-    def step(self, learning_rate: float, diff: dict[str, any] = None):
+    def step(
+        self, learning_rate: float, diff: dict[str, np.ndarray | None] | None = None
+    ) -> None:
+        """
+        Apply one in-place SGD update to the RNN layer weights (not the classifier).
+
+        Args:
+            learning_rate (float): SGD learning rate.
+            diff (dict[str, np.ndarray | None] | None): Gradients from ``backward``.
+                Defaults to ``self.diff``.
+        """
         # set default value
         if diff is None:
             diff = self.diff
@@ -157,12 +231,34 @@ class RNN(nn.Module):
     def train(
         self,
         train_loader: DataLoader,
-        val_loader: DataLoader,
+        val_loader: DataLoader | None,
         n_epochs: int = 1000,
         lr: float = 0.01,
         output_name: str = "numpy_rnn",
-    ):
-        data: dict[str, np.ndarray] = {
+    ) -> None:
+        """
+        Train with plain SGD and save the weights with the lowest validation loss.
+
+        Per batch: forward -> fc -> softmax -> cross-entropy (padding = -1 ignored)
+        -> fc backward and update -> RNN backward -> RNN step. Epoch losses are
+        averaged over valid (non-padding) tokens.
+
+        Note: this shadows ``nn.Module.train(mode)``; the torch train/eval mode is
+        not used here.
+
+        Args:
+            train_loader (DataLoader): Training batches of (X [B, T, V], y [B, T]).
+            val_loader (DataLoader | None): Validation batches. If None, only the
+                train loss is logged and no checkpoint is written.
+            n_epochs (int): Number of epochs.
+            lr (float): SGD learning rate.
+            output_name (str): Checkpoint path without the ".npz" extension.
+
+        The checkpoint "{output_name}.npz" holds the arrays named in ``PARAMS`` plus
+        "epoch", "val_loss", "lr" and "hidden_size". It is overwritten whenever the
+        validation loss reaches a new minimum.
+        """
+        data: dict[str, np.ndarray | None] = {
             "weight_fc": None,
             "bias_fc": None,
             "weight_ih": None,
@@ -184,22 +280,23 @@ class RNN(nn.Module):
                 y_train = np.array(y_train, dtype=np.int64)
                 Batch, Time, _ = X_train.shape
                 Hidden = self.hidden_size
-                output, hidden = self.forward(X_train)
-                out = output @ self.weight_fc.T + self.bias_fc
-                logits = out.reshape(-1, self.input_size)
+                output, hidden = self.forward(X_train)  # [B, T, H]
+                out = output @ self.weight_fc.T + self.bias_fc  # [B, T, V]
+                logits = out.reshape(-1, self.input_size)  # [B*T, V]
                 yhat = softmax(logits)
-                y_true = y_train.reshape(-1)
+                y_true = y_train.reshape(-1)  # [B*T]
                 loss, dlogits = CrossEntropyLoss(yhat, y_true, ignore_index=-1)
 
-                output = output.reshape(-1, Hidden)
-                dweight_fc = dlogits.T @ output
-                dbias_fc = np.sum(dlogits, axis=0)
+                output = output.reshape(-1, Hidden)  # [B*T, H]
+                dweight_fc = dlogits.T @ output  # [V, H]
+                dbias_fc = np.sum(dlogits, axis=0)  # [V]
 
-                doutput = dlogits @ self.weight_fc
+                # must use weight_fc before it is updated
+                doutput = dlogits @ self.weight_fc  # [B*T, H]
                 self.weight_fc -= lr * dweight_fc
                 self.bias_fc -= lr * dbias_fc
 
-                doutput = doutput.reshape(Batch, Time, Hidden)
+                doutput = doutput.reshape(Batch, Time, Hidden)  # [B, T, H]
                 self.backward(doutput)
                 self.step(learning_rate=lr)
 
@@ -261,9 +358,42 @@ class RNN(nn.Module):
 
 
 class GRU(nn.Module):
+    """
+    GRU layer plus a linear classifier, implemented in NumPy.
+
+    Gate order and weight shapes follow ``torch.nn.GRU`` (chunk order r, z, n)::
+
+        r_t = sigmoid(x_t Wxr^T + bxr + h_{t-1} Whr^T + bhr)
+        z_t = sigmoid(x_t Wxz^T + bxz + h_{t-1} Whz^T + bhz)
+        n_t = tanh(x_t Wxn^T + bxn + r_t * (h_{t-1} Whn^T + bhn))
+        h_t = (1 - z_t) * n_t + z_t * h_{t-1}
+
+    ``forward`` / ``backward`` / ``step`` cover the recurrent layer only. The classifier
+    (fc), softmax, cross-entropy and the fc update are done inside ``train``.
+
+    Attributes:
+        Wxr, Wxz, Wxn (np.ndarray): Input-to-hidden weights, shape [H, V].
+        Whr, Whz, Whn (np.ndarray): Hidden-to-hidden weights, shape [H, H].
+        bxr, bxz, bxn, bhr, bhz, bhn (np.ndarray): Biases, shape [H].
+        weight_fc (np.ndarray): Classifier weight, shape [V, H].
+        bias_fc (np.ndarray): Classifier bias, shape [V].
+        cache (dict[str, np.ndarray]): Per-time-step values saved by ``forward`` for
+            ``backward``. Keys: "x_t" [B, T, V], "h_prev", "h_t", "r_t", "z_t",
+            "n_t", "thn_t" [B, T, H].
+        diff (dict[str, np.ndarray]): Gradients from the latest ``backward``.
+        PARAMS (list[str]): Names of the trainable arrays saved to the npz checkpoint.
+    """
+
     def __init__(
         self, input_size: int = 29, hidden_size: int = 16, batch_first: bool = True
-    ):
+    ) -> None:
+        """
+        Args:
+            input_size (int): Vocabulary size V (one-hot input size and number of
+                output classes).
+            hidden_size (int): Hidden state size H.
+            batch_first (bool): If True, inputs are shaped [B, T, V].
+        """
         super().__init__()
         self.input_size: int = input_size
         self.hidden_size: int = hidden_size
@@ -303,12 +433,12 @@ class GRU(nn.Module):
         self.classifier: nn.Linear = nn.Linear(
             in_features=self.hidden_size, out_features=self.input_size
         )
-        state_dict = self.classifier.state_dict()
+        state_dict: dict[str, torch.Tensor] = self.classifier.state_dict()
         self.weight_fc: np.ndarray = state_dict["weight"].detach().cpu().numpy()
         self.bias_fc: np.ndarray = state_dict["bias"].detach().cpu().numpy()
 
-        self.cache: dict[str, any] = {}
-        self.diff: dict[str, any] = {}
+        self.cache: dict[str, np.ndarray] = {}
+        self.diff: dict[str, np.ndarray] = {}
         self.hidden: np.ndarray | None = None
         self.PARAMS: list[str] = [
             "weight_fc",
@@ -328,15 +458,44 @@ class GRU(nn.Module):
         ]
 
     def sigmoid(self, Z: np.ndarray) -> np.ndarray:
+        """
+        Element-wise logistic sigmoid.
+
+        Args:
+            Z (np.ndarray): Pre-activation, any shape.
+
+        Returns:
+            np.ndarray: 1 / (1 + exp(-Z)), same shape as Z.
+        """
         return 1 / (1 + np.exp(-Z))
 
     def reset_gate(self, X: np.ndarray, hidden: np.ndarray) -> np.ndarray:
+        """
+        Reset gate r_t.
+
+        Args:
+            X (np.ndarray): Input at one time step, shape [B, V].
+            hidden (np.ndarray): Previous hidden state, shape [B, H].
+
+        Returns:
+            np.ndarray: r_t, shape [B, H].
+        """
         txr = X @ self.Wxr.T + self.bxr
         thr = hidden @ self.Whr.T + self.bhr
         r = self.sigmoid(txr + thr)
         return r
 
     def update_gate(self, X: np.ndarray, hidden: np.ndarray) -> np.ndarray:
+        """
+        Update gate z_t.
+
+        Args:
+            X (np.ndarray): Input at one time step, shape [B, V].
+            hidden (np.ndarray): Previous hidden state, shape [B, H].
+
+        Returns:
+            np.ndarray: z_t, shape [B, H].
+        """
         txz = X @ self.Wxz.T + self.bxz
         thz = hidden @ self.Whz.T + self.bhz
         z = self.sigmoid(txz + thz)
@@ -344,13 +503,37 @@ class GRU(nn.Module):
 
     def candidate_n(
         self, X: np.ndarray, hidden: np.ndarray, r: np.ndarray
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Candidate hidden state n_t (bhn sits inside the reset gate, as in torch).
+
+        Args:
+            X (np.ndarray): Input at one time step, shape [B, V].
+            hidden (np.ndarray): Previous hidden state, shape [B, H].
+            r (np.ndarray): Reset gate r_t, shape [B, H].
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: (n_t, thn_t), where
+                thn_t = hidden @ Whn^T + bhn is kept for the backward pass.
+                Both have shape [B, H].
+        """
         txn = X @ self.Wxn.T + self.bxn
         thn = hidden @ self.Whn.T + self.bhn
         n = np.tanh(txn + r * thn)
         return n, thn
 
     def forward(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Run the GRU over the whole sequence, starting from a zero hidden state.
+
+        Args:
+            X (np.ndarray): One-hot input, shape [B, T, V].
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: (output, h_last), where output holds the
+                hidden state of every time step, shape [B, T, H], and h_last is the
+                hidden state of the last time step, shape [B, H].
+        """
         B, T, V = X.shape
         H = self.hidden_size
 
@@ -383,7 +566,24 @@ class GRU(nn.Module):
         # return output and lst hidden state
         return self.cache["h_t"], h_t
 
-    def backward(self, doutput: np.ndarray) -> dict[str, any]:
+    def backward(self, doutput: np.ndarray) -> dict[str, np.ndarray]:
+        """
+        Backpropagation through time for the GRU layer, using the latest ``forward`` cache.
+
+        Gradients of the shared weights are summed over all time steps. dh_prev
+        collects four paths: through r_t, z_t, thn_t (via Whn), and the direct
+        path dh * z_t.
+
+        Args:
+            doutput (np.ndarray): dLoss/d(output), the gradient flowing into every
+                hidden state from the classifier, shape [B, T, H].
+
+        Returns:
+            dict[str, np.ndarray]: Gradients (also stored in ``self.diff``):
+                "dWxr", "dWxz", "dWxn" [H, V]; "dWhr", "dWhz", "dWhn" [H, H];
+                "dbxr", "dbxz", "dbxn", "dbhr", "dbhz", "dbhn" [H]; "dx" [B, T, V];
+                "dh_prev" / "dh_next" [B, H] (gradient w.r.t. the initial hidden state).
+        """
         B, T, H = doutput.shape
         dx: np.ndarray = np.zeros_like(self.cache["x_t"], dtype=np.float32)
         dWxr: np.ndarray = np.zeros_like(self.Wxr, dtype=np.float32)
@@ -474,7 +674,17 @@ class GRU(nn.Module):
 
         return self.diff
 
-    def step(self, learning_rate: float, diff: dict[str, any] = None):
+    def step(
+        self, learning_rate: float, diff: dict[str, np.ndarray] | None = None
+    ) -> None:
+        """
+        Apply one in-place SGD update to the 12 GRU weights (not the classifier).
+
+        Args:
+            learning_rate (float): SGD learning rate.
+            diff (dict[str, np.ndarray] | None): Gradients from ``backward``.
+                Defaults to ``self.diff``.
+        """
         # set default value
         if diff is None:
             diff = self.diff
@@ -494,12 +704,32 @@ class GRU(nn.Module):
     def train(
         self,
         train_loader: DataLoader,
-        val_loader: DataLoader,
+        val_loader: DataLoader | None,
         n_epochs: int = 1000,
         lr: float = 0.01,
         output_name: str = "numpy_gru",
-    ):
-        data: dict[str, np.ndarray] = {
+    ) -> None:
+        """
+        Train with plain SGD and save the weights with the lowest validation loss.
+
+        Same loop as ``RNN.train``: forward -> fc -> softmax -> cross-entropy
+        (padding = -1 ignored) -> fc backward and update -> GRU backward -> GRU step.
+
+        Note: this shadows ``nn.Module.train(mode)``; the torch train/eval mode is
+        not used here.
+
+        Args:
+            train_loader (DataLoader): Training batches of (X [B, T, V], y [B, T]).
+            val_loader (DataLoader | None): Validation batches. If None, only the
+                train loss is logged and no checkpoint is written.
+            n_epochs (int): Number of epochs.
+            lr (float): SGD learning rate.
+            output_name (str): Checkpoint path without the ".npz" extension.
+
+        The checkpoint "{output_name}.npz" holds the 14 arrays named in ``PARAMS``
+        plus "epoch", "val_loss", "lr" and "hidden_size".
+        """
+        data: dict[str, np.ndarray | None] = {
             "weight_fc": None,
             "bias_fc": None,
             "Wxr": None,
@@ -529,22 +759,23 @@ class GRU(nn.Module):
                 y_train = np.array(y_train, dtype=np.int64)
                 Batch, Time, _ = X_train.shape
                 Hidden = self.hidden_size
-                output, hidden = self.forward(X_train)
-                out = output @ self.weight_fc.T + self.bias_fc
-                logits = out.reshape(-1, self.input_size)
+                output, hidden = self.forward(X_train)  # [B, T, H]
+                out = output @ self.weight_fc.T + self.bias_fc  # [B, T, V]
+                logits = out.reshape(-1, self.input_size)  # [B*T, V]
                 yhat = softmax(logits)
-                y_true = y_train.reshape(-1)
+                y_true = y_train.reshape(-1)  # [B*T]
                 loss, dlogits = CrossEntropyLoss(yhat, y_true, ignore_index=-1)
 
-                output = output.reshape(-1, Hidden)
-                dweight_fc = dlogits.T @ output
-                dbias_fc = np.sum(dlogits, axis=0)
+                output = output.reshape(-1, Hidden)  # [B*T, H]
+                dweight_fc = dlogits.T @ output  # [V, H]
+                dbias_fc = np.sum(dlogits, axis=0)  # [V]
 
-                doutput = dlogits @ self.weight_fc
+                # must use weight_fc before it is updated
+                doutput = dlogits @ self.weight_fc  # [B*T, H]
                 self.weight_fc -= lr * dweight_fc
                 self.bias_fc -= lr * dbias_fc
 
-                doutput = doutput.reshape(Batch, Time, Hidden)
+                doutput = doutput.reshape(Batch, Time, Hidden)  # [B, T, H]
                 self.backward(doutput)
                 self.step(learning_rate=lr)
 
@@ -614,7 +845,7 @@ class GRU(nn.Module):
             )
 
 
-def main():
+def main() -> None:
     """Load names.txt, split it into train/validation sets, and run a short training job."""
     input_size: int = 29
     hidden_size: int = 16
@@ -634,7 +865,7 @@ def main():
     )
     name: str = "GRU"
     if name == "RNN":
-        model: RNN = RNN(
+        model: RNN | GRU = RNN(
             input_size=input_size, hidden_size=hidden_size, batch_first=True
         )
         n_epochs: int = 1
@@ -643,11 +874,9 @@ def main():
             train_loader=train_loader, val_loader=val_loader, n_epochs=n_epochs, lr=lr
         )
     elif name == "GRU":
-        model: GRU = GRU(
-            input_size=input_size, hidden_size=hidden_size, batch_first=True
-        )
-        n_epochs: int = 1
-        lr: float = 0.01
+        model = GRU(input_size=input_size, hidden_size=hidden_size, batch_first=True)
+        n_epochs = 1
+        lr = 0.01
         model.train(
             train_loader=train_loader, val_loader=val_loader, n_epochs=n_epochs, lr=lr
         )
