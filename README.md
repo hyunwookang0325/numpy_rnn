@@ -168,6 +168,6 @@ B, T, H를 일부러 서로 다르게 잡았습니다. B = H처럼 정사각형�
 ## 예정
 
 - [x] NumPy LSTM (forward / backward / torch 비교)
-- [ ] NumPy LSTM 학습 (`main()`의 LSTM 분기에 `train()` 호출 추가)
+- [x] NumPy LSTM 학습 (1 epoch)
 - [ ] RNN / GRU / LSTM 비교 (seed 고정, epoch 늘려서)
 - [ ] NumPy predict (npz 불러오기 → 이름 생성)
