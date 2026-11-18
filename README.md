@@ -1,9 +1,15 @@
 # numpy_rnn — Character-level RNN / GRU / LSTM in NumPy
 
-문자 단위 언어 모델(이름 생성)을 **NumPy로 forward / backward(BPTT) / SGD / checkpoint까지 직접 구현**한 패키지입니다.
-같은 모델을 PyTorch(`nn.RNN` / `nn.GRU` / `nn.LSTM`)로도 만들어 두고, 그것을 정답지로 삼아 NumPy 구현의 기울기를 검증합니다.
+문자 단위 언어 모델(이름 생성)을 **NumPy로 forward / backward(BPTT) / SGD / checkpoint까지 직접 구현**한 패키지.
+근본적으로 공부하려고 만든거기도 하고, docstring, annotation 외에는 따로 AI 도움 받지 않음.
+그런 탓에 comment 에 다소 주절주절 gradient 과정을 써놓았는데 그게 계산한 흔적이기에 따로 지우진 않음.
+같은 모델을 PyTorch(`nn.RNN` / `nn.GRU` / `nn.LSTM`)로도 만들어 두고, 그것을 정답지로 삼아 NumPy 구현의 기울기를 검증함.
+검증이 되어야 어떻게 사용할지 응용할 수 있을지 확인할 수 있을 것이라고 판단.
 
-이전 저장소 [GRU_numpy](https://github.com/hyunwookang0325/GRU_numpy)(GRU 단일 파일 버전)를 패키지 구조로 옮기고, vanilla RNN과 LSTM을 추가했습니다.
+추후에는 Transformer, attention 등을 이용하여 이런저런 프로젝트를 하려고 하는데 가장 근간 (근본아님)이 되는 코드 만듦.
+
+이전 저장소 [GRU_numpy](https://github.com/hyunwookang0325/GRU_numpy)(GRU 단일 파일 버전)를 패키지 구조로 옮기고, vanilla RNN과 LSTM을 추가함.
+RNN 마니아 아닙니다. (여튼 아님)
 
 ```text
 "emma", "olivia", ...  →  tokenizer  →  RNN / GRU / LSTM (NumPy)  →  fc (H → 29)  →  softmax  →  다음 글자
@@ -16,7 +22,7 @@
 |---|---|---|---|---|
 | RNN | ✅ | ✅ | ✅ | ✅ |
 | GRU | ✅ | ✅ 15 / 15 | ✅ | ✅ |
-| LSTM | ✅ | ✅ 19 / 19 | ✅ (학습 결과 미측정) | ✅ |
+| LSTM | ✅ | ✅ 19 / 19 | ✅ | ✅ |
 
 ## 구조
 
@@ -147,7 +153,7 @@ ckpt["Wxr"], float(ckpt["val_loss"])
 | RNN 기울기 vs `torch.autograd` | 일치, max abs diff ≤ 1.9e-6 |
 | 학습 전 첫 배치 loss | 3.35 ~ 3.41 ≈ ln 29 = 3.37 (균등 추측) |
 
-B, T, H를 일부러 서로 다르게 잡았습니다. B = H처럼 정사각형이면 전치를 잘못해도 shape 에러가 나지 않고 통과해 버리기 때문입니다.
+B, T, H를 일부러 서로 다르게 잡았습니다. B = H처럼 정사각형이면 전치를 잘못해도 shape 에러가 나지 않고 통과해 버리기 때문.
 
 ## 학습 결과 (1 epoch, SGD lr 0.01, H = 16, seed 미고정)
 
@@ -155,9 +161,9 @@ B, T, H를 일부러 서로 다르게 잡았습니다. B = H처럼 정사각형�
 |---|---|---|
 | RNN | 2.85 ~ 2.90 | 2.70 ~ 2.75 |
 | GRU | 2.98 | 2.80 |
-| LSTM | — | — (아직 학습 안 함) |
+| LSTM | 3.0614 | 2.8804 |
 
-1 epoch 결과이고 seed를 고정하지 않아 실행마다 ±0.05 정도 흔들립니다. 모델 간 비교는 아직 하지 않았습니다.
+1 epoch 결과이고 seed를 고정하지 않아 실행마다 ±0.05 정도 흔들립니다. 모델 간 비교는 아직 하지 않았음.
 
 ## 예정
 
