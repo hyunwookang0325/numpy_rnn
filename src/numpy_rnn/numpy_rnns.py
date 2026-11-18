@@ -345,9 +345,11 @@ class RNN(nn.Module):
                         hidden_size=self.hidden_size,
                     )
 
-                logger.info(
-                    f"{epoch + 1} has train loss: {train_loss: .4f} validation loss: {val_loss: .4f}"
-                )
+                if (epoch + 1) % 10 == 0:
+                    logger.info(
+                        f"{epoch + 1} has train loss: {train_loss: .4f} validation loss: {val_loss: .4f}"
+                    )
+
             else:
                 logger.info(f"{epoch + 1} has train loss: {train_loss: .4f}")
 
@@ -833,9 +835,11 @@ class GRU(nn.Module):
                         hidden_size=self.hidden_size,
                     )
 
-                logger.info(
-                    f"{epoch + 1} has train loss: {train_loss: .4f} validation loss: {val_loss: .4f}"
-                )
+                if (epoch + 1) % 10 == 0:
+                    logger.info(
+                        f"{epoch + 1} has train loss: {train_loss: .4f} validation loss: {val_loss: .4f}"
+                    )
+
             else:
                 logger.info(f"{epoch + 1} has train loss: {train_loss: .4f}")
 
@@ -1407,10 +1411,10 @@ class LSTM(nn.Module):
                         lr=lr,
                         hidden_size=self.hidden_size,
                     )
-
-                logger.info(
-                    f"{epoch + 1} has train loss: {train_loss: .4f} validation loss: {val_loss: .4f}"
-                )
+                if (epoch + 1) % 10 == 0:
+                    logger.info(
+                        f"{epoch + 1} has train loss: {train_loss: .4f} validation loss: {val_loss: .4f}"
+                    )
             else:
                 logger.info(f"{epoch + 1} has train loss: {train_loss: .4f}")
 
@@ -1438,34 +1442,45 @@ def main() -> None:
         batch_size=16,
         shuffle=True,
     )
-    name: str = "LSTM"
-    if name == "RNN":
-        model: RNN | GRU | LSTM = RNN(
-            input_size=input_size, hidden_size=hidden_size, batch_first=True
-        )
-        n_epochs: int = 1
-        lr: float = 0.01
-        model.train(
-            train_loader=train_loader, val_loader=val_loader, n_epochs=n_epochs, lr=lr
-        )
-    elif name == "GRU":
-        model: GRU = GRU(
-            input_size=input_size, hidden_size=hidden_size, batch_first=True
-        )
-        n_epochs = 1
-        lr = 0.01
-        model.train(
-            train_loader=train_loader, val_loader=val_loader, n_epochs=n_epochs, lr=lr
-        )
-    elif name == "LSTM":
-        model: LSTM = LSTM(
-            input_size=input_size, hidden_size=hidden_size, batch_first=True
-        )
-        n_epochs = 1
-        lr = 0.01
-        model.train(
-            train_loader=train_loader, val_loader=val_loader, n_epochs=n_epochs, lr=lr
-        )
+    names: list[str] = ["RNN", "GRU", "LSTM"]
+    for name in names:
+        logger.info(f"{name} training is now working")
+        if name == "RNN":
+            model: RNN | GRU | LSTM = RNN(
+                input_size=input_size, hidden_size=hidden_size, batch_first=True
+            )
+            n_epochs: int = 200
+            lr: float = 0.3
+            model.train(
+                train_loader=train_loader,
+                val_loader=val_loader,
+                n_epochs=n_epochs,
+                lr=lr,
+            )
+        elif name == "GRU":
+            model: GRU = GRU(
+                input_size=input_size, hidden_size=hidden_size, batch_first=True
+            )
+            n_epochs = 200
+            lr = 0.3
+            model.train(
+                train_loader=train_loader,
+                val_loader=val_loader,
+                n_epochs=n_epochs,
+                lr=lr,
+            )
+        elif name == "LSTM":
+            model: LSTM = LSTM(
+                input_size=input_size, hidden_size=hidden_size, batch_first=True
+            )
+            n_epochs = 200
+            lr = 0.3
+            model.train(
+                train_loader=train_loader,
+                val_loader=val_loader,
+                n_epochs=n_epochs,
+                lr=lr,
+            )
 
 
 if __name__ == "__main__":
